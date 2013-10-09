@@ -4,6 +4,10 @@ module-template: ! 'module MODULE_NAME where
 extensions: {}
 environment: null
 cabal-file: project.cabal
-modules: {}
+modules:
+  Core:
+    filename: src/Core.hs
+  CoreSpec:
+    filename: src/CoreSpec.hs
 version: 1
 ghc-args: []
