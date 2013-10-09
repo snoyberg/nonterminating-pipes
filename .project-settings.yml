@@ -5,6 +5,10 @@ extensions: {}
 environment: null
 cabal-file: project.cabal
 modules:
+  TermSpec:
+    filename: src/TermSpec.hs
+  Term:
+    filename: src/Term.hs
   Core:
     filename: src/Core.hs
   CoreSpec:

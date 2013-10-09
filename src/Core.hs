@@ -4,6 +4,7 @@ module Core where
 import Control.Monad
 import Control.Applicative hiding (empty)
 import Control.Monad.Trans.Class
+import Control.Monad.Morph
 
 data Step i o d m r
     = Pure r
@@ -32,6 +33,15 @@ instance Monad m => Monad (Pipe i o d m) where
         go _ (Yield next o) = Yield (next >>= g) o
 instance MonadTrans (Pipe i o d) where
     lift m = Pipe $ \_ -> M (liftM Pure m)
+
+instance MFunctor (Step i o d) where
+    hoist _ (Pure r) = Pure r
+    hoist f (M m) = M (f (liftM (hoist f) m))
+    hoist f (Await next) = Await (hoist f . next)
+    hoist f (Yield next o) = Yield (hoist f next) o
+
+instance MFunctor (Pipe i o d) where
+    hoist f (Pipe p) = Pipe (hoist f . p)
 
 fuse :: Monad m
      => Pipe i j b m a

@@ -1,0 +1,28 @@
+return x >>= f = f x
+
+Pipe (\_ -> Pure x) >>= f
+    = Pipe (\md -> go md (Pure x))
+    = Pipe (\md -> unPipe (f x) md)
+    = Pipe (unPipe (f x))
+    = f x
+
+Pipe f >>= return
+    = Pipe $ \md -> go md (f md)
+
+    go md (Pure a)
+        = unPipe (return a) md
+        = (const (Pure a)) md
+        = Pure a
+
+    go md (M m)
+        = M (liftM (go md) m)
+
+    return = Pipe . const . Pure
+
+    Pipe f >>= g =
+        Pipe $ \md -> go md $ f md
+      where
+        go md (Pure r) = unPipe (g r) md
+        go md (M m) = M (liftM (go md) m)
+        go md (Await next) = Await (go md . next)
+        go _ (Yield next o) = Yield (next >>= g) o
