@@ -7,10 +7,16 @@ cabal-file: project.cabal
 modules:
   TermSpec:
     filename: src/TermSpec.hs
+  ListT:
+    filename: src/ListT.hs
   Term:
     filename: src/Term.hs
+  Receiver:
+    filename: src/Receiver.hs
   Core:
     filename: src/Core.hs
+  Generator:
+    filename: src/Generator.hs
   CoreSpec:
     filename: src/CoreSpec.hs
 version: 1
