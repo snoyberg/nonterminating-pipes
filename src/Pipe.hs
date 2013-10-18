@@ -121,9 +121,18 @@ runPipe (Pipe p0) =
     go (Await f) = go $ f Nothing
     go (Yield f _) = go $ f $ Just ((), [])
 
+consume :: Monad m => Pipe i o d m [i]
+consume =
+    loop id
+  where
+    loop front = await >>= maybe (return $ front []) (\i -> loop $ front . (i:))
+
 main :: IO ()
 main = do
-    let src = sourceList [1..10] :: Pipe i Int d IO d
-        sink = sum'
-    res <- runPipe $ (fuse src (fuse idPipe sink) :: Pipe i o d IO Int)
+    let pipeline = sourceList [4..10] `fuse` do
+            leftover (3 :: Int)
+            idPipe `fuse` leftover 2
+            leftover 1
+            consume
+    res <- runPipe pipeline
     print res
