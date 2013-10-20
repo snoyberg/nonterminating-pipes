@@ -3,6 +3,9 @@
 module Pipe where
 
 import Control.Monad
+import Control.Applicative ((<$>), (<*>))
+import Data.Void
+import Test.Hspec (shouldBe)
 
 data Step i o d m r
     = Pure r
@@ -141,22 +144,84 @@ take' :: Monad m => Int -> Pipe i i d t m ()
 take' 0 = return ()
 take' count = await >>= maybe (return ()) (\i -> yield i >> take' (count - 1))
 
+type Source m o = Pipe () o () () m ()
+type Conduit i m o = Pipe i o () () m ()
+type Sink i m r = Pipe i Void () Void m r
+
+-- | Run upstream even if downstream is completed.
+-- Downstream early term must be the same as downstream result.
+(>->) :: Monad m
+      => Pipe i j b t m a
+      -> Pipe j k c b m b
+      -> Pipe i k c t m a
+(>->) = fuse
+
+-- | Only run upstream if downstream is still running.
+-- Upstream always returns the return value from downstream.
+(=$=) :: Monad m
+      => Pipe i j () () m ()
+      -> Pipe j k c b m b
+      -> Pipe i k c t m b
+up =$= down =
+    up' >-> down
+  where
+    up' = check >>= maybe (noTerm up >> liftM fst empty) (return . fst)
+
+noTerm :: Monad m => Pipe i o () t m r -> Pipe i o d' t' m (Either t r)
+noTerm (Pipe f) = Pipe $ \mdo is -> do
+    (mdo', is', res) <- ignoreD $ f ((\(_, os) -> ((), os)) <$> mdo) is
+    let mdo'' = (,) <$> (fst <$> mdo) <*> (snd <$> mdo')
+    return (mdo'', is', Right res)
+  where
+    ignoreD (Pure r) = Pure r
+    ignoreD (M m) = M (liftM ignoreD m)
+    ignoreD (Await next) = Await (ignoreD . next)
+    ignoreD (Yield next o) = Yield (ignoreD . next . dropD) o
+
+    dropD = ((\(_, os) -> ((), os)) <$>)
+
+-- | Same as =$=, but assert that downstream has no termination value
+-- instead of asserting that termination value is the same as the
+-- return value.
+(=$) :: Monad m
+     => Pipe i j () () m ()
+     -> Pipe j k c Void m b
+     -> Pipe i k c t m b
+up =$ down = up =$= absurdTerm down
+
+-- | Fuse with the semantics of =$, and then call runPipe.
+($$) :: Monad m
+     => Pipe i j () () m ()
+     -> Pipe j k () Void m b
+     -> m b
+up $$ down = runPipe (up =$ down)
+
+absurdTerm :: Monad m => Pipe i o d Void m r -> Pipe i o d t m r
+absurdTerm (Pipe f) = Pipe $ \mdo is -> do
+    (mdo', is', res) <- f mdo is
+    return (mdo', is', either absurd Right res)
+
 main :: IO ()
 main = do
-    let src :: Pipe i Int d d IO d
-        src = do
-            mapM_ yieldTerm [4..]
-            liftM fst empty
-        conduit :: Pipe Int Int d d IO d
-        conduit = do
-            take' 7
-            liftM fst empty
-        sink :: Pipe Int o d t IO [Int]
+    let src :: Source IO Int
+        src =  mapM_ yieldTerm [4..]
+        conduit :: Conduit Int IO Int
+        conduit =  take' 7
+        sink :: Sink Int IO [Int]
         sink = do
             leftover (3 :: Int)
             idPipe `fuse` leftover 2
             leftover 1
             consume
-    let pipeline = src `fuse` conduit `fuse` sink
-    res <- runPipe pipeline
-    print res
+        test x = do
+            res <- x
+            res `shouldBe` [1..10 :: Int]
+    mapM_ test
+        [ runPipe $ src =$= conduit =$ sink
+        , src $$ (conduit =$ sink)
+        , (src =$= conduit) $$ sink
+        , (src =$= idPipe =$= conduit) $$ sink
+        , (src =$= conduit) $$ (sink >-> idPipe)
+        , (src =$= conduit >-> idPipe) $$ (idPipe =$ sink >-> idPipe)
+        ]
+    putStrLn "Success!"
