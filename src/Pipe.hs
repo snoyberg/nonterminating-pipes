@@ -101,16 +101,13 @@ fuse up0 (Pipe down0) =
         let up x = unPipe up0 x is
          in go up $ down0 mc []
   where
-    go up1 (Pure (mc0, js, either id id -> b)) =
-        closeDown mc0
+    go up1 (Pure (mc, js, either id id -> b)) = -- FIXME throwing away term info, maybe should be a different function
+        closeUp $ up1 $ Just (b, js)
       where
-        closeDown (Just cks) = closeUp cks $ up1 $ Just (b, js)
-        closeDown Nothing = Yield closeDown Nothing
-
-        closeUp cks (Pure (_, is, a)) = Pure (Just cks, is, a)
-        closeUp cks (M m) = M (liftM (closeUp cks) m)
-        closeUp cks (Yield up _) = closeUp cks $ up $ Just (b, js) -- FIXME double leftovers
-        closeUp cks (Await f) = Await (closeUp cks . f)
+        closeUp (Pure (_, is, a)) = Pure (mc, is, a)
+        closeUp (M m) = M (liftM closeUp m)
+        closeUp (Yield up _) = closeUp $ up $ Just (b, js) -- FIXME double leftovers
+        closeUp (Await f) = Await (closeUp . f)
     go up (M m) = M (liftM (go up) m)
     go up1 (Await f) =
         goUp $ up1 Nothing
@@ -224,11 +221,12 @@ main = do
         src :: Source (WriterT String IO) Int
         src = do
             lift $ tell "starting src\n"
-            addCleanup (tell "cleaning src\n") $ mapM_ yieldTerm [4..]
+            addCleanup (tell "cleaning src\n") $ mapM_ yieldTerm [1..]
             lift $ tell "never reached: src"
         conduit :: Conduit Int (WriterT String IO) Int
         conduit = do
             lift $ tell "starting conduit\n"
+            take' 3 >-> return ()
             addCleanup (tell "cleaning conduit\n") $ take' 7
         sink :: Sink Int (WriterT String IO) [Int]
         sink = do
