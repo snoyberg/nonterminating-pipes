@@ -1,3 +1,4 @@
+{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wall #-}
 module Pipe where
 
@@ -16,42 +17,51 @@ instance Monad m => Monad (Step i o d m) where
     Await next >>= f = Await (next >=> f)
     Yield next o >>= f = Yield (next >=> f) o
 
-newtype Pipe i o d m r = Pipe
-    { unPipe :: Maybe (d, [o]) -> [i] -> Step i o d m (Maybe (d, [o]), [i], r)
+newtype Pipe i o d t m r = Pipe
+    { unPipe :: Maybe (d, [o]) -> [i] -> Step i o d m (Maybe (d, [o]), [i], Either t r)
     }
 
-instance Monad m => Monad (Pipe i o d m) where
-    return x = Pipe $ \mdo is -> Pure (mdo, is, x)
+instance Monad m => Monad (Pipe i o d t m) where
+    return x = Pipe $ \mdo is -> Pure (mdo, is, Right x)
 
     Pipe f >>= g = Pipe $ \mdo is -> do
-        (mdo', is', r) <- f mdo is
-        unPipe (g r) mdo' is'
+        (mdo', is', etr) <- f mdo is
+        case etr of
+            Left t -> return (mdo', is', Left t)
+            Right r -> unPipe (g r) mdo' is'
 
-await :: Monad m => Pipe i o d m (Maybe i)
+await :: Monad m => Pipe i o d t m (Maybe i)
 await = Pipe $ \mdo is ->
     case is of
-        [] -> Await $ \mi -> Pure (mdo, [], mi)
-        i:is' -> Pure (mdo, is', Just i)
+        [] -> Await $ \mi -> Pure (mdo, [], Right mi)
+        i:is' -> Pure (mdo, is', Right $ Just i)
 
-yield :: Monad m => o -> Pipe i o d m ()
-yield o = Pipe $ \_ is -> Yield (\mdo -> Pure (mdo, is, ())) (Just o)
+yield :: Monad m => o -> Pipe i o d t m ()
+yield o = Pipe $ \_ is -> Yield (\mdo -> Pure (mdo, is, Right ())) (Just o)
 
-empty :: Monad m => Pipe i o d m (d, [o])
+yieldTerm :: Monad m => o -> Pipe i o d d m ()
+yieldTerm o = Pipe $ \_ is -> Yield (\mdo ->
+    case mdo of
+        Nothing -> Pure (mdo, is, Right ())
+        Just (d, _) -> Pure (mdo, is, Left d)
+        ) (Just o)
+
+empty :: Monad m => Pipe i o d t m (d, [o])
 empty = Pipe $ \mdo0 is ->
-    let loop (Just (d, os)) = Pure (Just (d, os), is, (d, os))
+    let loop (Just (d, os)) = Pure (Just (d, os), is, Right (d, os))
         loop Nothing = Yield loop Nothing
      in loop mdo0
 
-leftover :: Monad m => i -> Pipe i o d m ()
-leftover i = Pipe $ \mdo is -> Pure (mdo, i:is, ())
+leftover :: Monad m => i -> Pipe i o d t m ()
+leftover i = Pipe $ \mdo is -> Pure (mdo, i:is, Right ())
 
-leftovers :: Monad m => [i] -> Pipe i o d m ()
-leftovers is = Pipe $ \mdo is' -> Pure (mdo, is ++ is', ())
+leftovers :: Monad m => [i] -> Pipe i o d t m ()
+leftovers is = Pipe $ \mdo is' -> Pure (mdo, is ++ is', Right ())
 
-check :: Monad m => Pipe i o d m (Maybe (d, [o]))
-check = Pipe $ \mdo is -> Pure (mdo, is, mdo)
+check :: Monad m => Pipe i o d t m (Maybe (d, [o]))
+check = Pipe $ \mdo is -> Pure (mdo, is, Right mdo)
 
-idPipe :: Monad m => Pipe i i r m r
+idPipe :: Monad m => Pipe i i r t m r
 idPipe = do
     mdo <- check
     case mdo of
@@ -70,15 +80,15 @@ idPipe = do
                     idPipe
 
 fuse :: Monad m
-     => Pipe i j b m a
-     -> Pipe j k c m b
-     -> Pipe i k c m a
+     => Pipe i j b t m a
+     -> Pipe j k c b m b
+     -> Pipe i k c t m a
 fuse up0 (Pipe down0) =
     Pipe $ \mc is ->
         let up x = unPipe up0 x is
          in go up $ down0 mc []
   where
-    go up1 (Pure (mc0, js, b)) =
+    go up1 (Pure (mc0, js, either id id -> b)) =
         closeDown mc0
       where
         closeDown (Just cks) = closeUp cks $ up1 $ Just (b, js)
@@ -98,11 +108,11 @@ fuse up0 (Pipe down0) =
         goUp (Await up) = Await (goUp . up)
     go up (Yield down o) = Yield (go up . down) o
 
-sourceList :: Monad m => [o] -> Pipe i o d m d
+sourceList :: Monad m => [o] -> Pipe i o d t m d
 sourceList [] = liftM fst empty
 sourceList (o:os) = yield o >> sourceList os
 
-sum' :: Monad m => Pipe Int o d m Int
+sum' :: Monad m => Pipe Int o d t m Int
 sum' =
     loop 0
   where
@@ -112,27 +122,41 @@ sum' =
             Nothing -> return total
             Just i -> loop $! total + i
 
-runPipe :: Monad m => Pipe i o () m r -> m r
+runPipe :: Monad m => Pipe i o () r m r -> m r
 runPipe (Pipe p0) =
     go $ p0 (Just ((), [])) []
   where
-    go (Pure (_, _, r)) = return r
+    go (Pure (_, _, r)) = return $ either id id r
     go (M m) = m >>= go
     go (Await f) = go $ f Nothing
     go (Yield f _) = go $ f $ Just ((), [])
 
-consume :: Monad m => Pipe i o d m [i]
+consume :: Monad m => Pipe i o d t m [i]
 consume =
     loop id
   where
     loop front = await >>= maybe (return $ front []) (\i -> loop $ front . (i:))
 
+take' :: Monad m => Int -> Pipe i i d t m ()
+take' 0 = return ()
+take' count = await >>= maybe (return ()) (\i -> yield i >> take' (count - 1))
+
 main :: IO ()
 main = do
-    let pipeline = sourceList [4..10] `fuse` do
+    let src :: Pipe i Int d d IO d
+        src = do
+            mapM_ yieldTerm [4..]
+            liftM fst empty
+        conduit :: Pipe Int Int d d IO d
+        conduit = do
+            take' 7
+            liftM fst empty
+        sink :: Pipe Int o d t IO [Int]
+        sink = do
             leftover (3 :: Int)
             idPipe `fuse` leftover 2
             leftover 1
             consume
+    let pipeline = src `fuse` conduit `fuse` sink
     res <- runPipe pipeline
     print res
