@@ -3,9 +3,11 @@
 module Pipe where
 
 import Control.Monad
+import Control.Monad.Trans.Writer
+import Control.Monad.Trans.Class
 import Control.Applicative ((<$>), (<*>))
 import Data.Void
-import Test.Hspec (shouldBe)
+import Test.Hspec
 
 data Step i o d m r
     = Pure r
@@ -20,6 +22,9 @@ instance Monad m => Monad (Step i o d m) where
     Await next >>= f = Await (next >=> f)
     Yield next o >>= f = Yield (next >=> f) o
 
+instance MonadTrans (Step i o d) where
+    lift m = M (liftM Pure m)
+
 newtype Pipe i o d t m r = Pipe
     { unPipe :: Maybe (d, [o]) -> [i] -> Step i o d m (Maybe (d, [o]), [i], Either t r)
     }
@@ -32,6 +37,11 @@ instance Monad m => Monad (Pipe i o d t m) where
         case etr of
             Left t -> return (mdo', is', Left t)
             Right r -> unPipe (g r) mdo' is'
+
+instance MonadTrans (Pipe i o d t) where
+    lift m = Pipe $ \mdo is -> do
+        res <- lift m
+        return (mdo, is, Right res)
 
 await :: Monad m => Pipe i o d t m (Maybe i)
 await = Pipe $ \mdo is ->
@@ -201,27 +211,50 @@ absurdTerm (Pipe f) = Pipe $ \mdo is -> do
     (mdo', is', res) <- f mdo is
     return (mdo', is', either absurd Right res)
 
+addCleanup :: Monad m => m () -> Pipe i o d t m r -> Pipe i o d t m r
+addCleanup cleanup (Pipe f) = Pipe $ \mdo is -> do
+    res <- f mdo is
+    lift cleanup
+    return res
+
 main :: IO ()
 main = do
-    let src :: Source IO Int
-        src =  mapM_ yieldTerm [4..]
-        conduit :: Conduit Int IO Int
-        conduit =  take' 7
-        sink :: Sink Int IO [Int]
+    let unused :: Source (WriterT String IO) ()
+        unused = lift $ tell "unused\n"
+        src :: Source (WriterT String IO) Int
+        src = do
+            lift $ tell "starting src\n"
+            addCleanup (tell "cleaning src\n") $ mapM_ yieldTerm [4..]
+            lift $ tell "never reached: src"
+        conduit :: Conduit Int (WriterT String IO) Int
+        conduit = do
+            lift $ tell "starting conduit\n"
+            addCleanup (tell "cleaning conduit\n") $ take' 7
+        sink :: Sink Int (WriterT String IO) [Int]
         sink = do
+            lift $ tell "starting sink\n"
             leftover (3 :: Int)
             idPipe `fuse` leftover 2
             leftover 1
-            consume
-        test x = do
-            res <- x
+            res <- consume
+            lift $ tell "sink is done\n"
+            return res
+        test name x = it name $ do
+            (res, w) <- runWriterT x
             res `shouldBe` [1..10 :: Int]
-    mapM_ test
-        [ runPipe $ src =$= conduit =$ sink
-        , src $$ (conduit =$ sink)
-        , (src =$= conduit) $$ sink
-        , (src =$= idPipe =$= conduit) $$ sink
-        , (src =$= conduit) $$ (sink >-> idPipe)
-        , (src =$= conduit >-> idPipe) $$ (idPipe =$ sink >-> idPipe)
-        ]
-    putStrLn "Success!"
+            w `shouldBe` unlines
+                [ "starting sink"
+                , "starting conduit"
+                , "starting src"
+                , "cleaning conduit"
+                , "sink is done"
+                , "cleaning src"
+                ]
+    hspec $ do
+        test "1" $ runPipe $ src =$= conduit =$ sink
+        test "2" $ src $$ (conduit =$ sink)
+        test "3" $ (src =$= conduit) $$ sink
+        test "4" $ (src =$= idPipe =$= conduit) $$ sink
+        test "5" $ (src =$= conduit) $$ (sink >-> idPipe)
+        test "6" $ (src =$= conduit >-> idPipe) $$ (idPipe =$ sink >-> idPipe)
+        test "7" $ (unused =$= src =$= conduit >-> idPipe) $$ (idPipe =$ sink >-> idPipe)
