@@ -7,5 +7,7 @@ cabal-file: project.cabal
 modules:
   Pipe:
     filename: src/Pipe.hs
+  AssocViolation:
+    filename: src/AssocViolation.hs
 version: 1
 ghc-args: []

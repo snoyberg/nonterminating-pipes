@@ -263,3 +263,9 @@ main = do
         test "5" $ (src =$= conduit) $$ (sink >-> idPipe)
         test "6" $ (src =$= conduit >-> idPipe) $$ (idPipe =$ sink >-> idPipe)
         test "7" $ (unused =$= src =$= conduit >-> idPipe) $$ (idPipe =$ sink >-> idPipe)
+        it "downstream termination" $ do
+            let up = return ()
+                down = await >> lift (tell "cleaned up") >> return ()
+                pipe = up >-> down
+                res = execWriter $ runPipe pipe
+            res `shouldBe` "cleaned up"
