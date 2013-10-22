@@ -94,14 +94,15 @@ idPipe = do
 
 fuse :: Monad m
      => Pipe i j b t m a
-     -> Pipe j k c b m b
+     -> Pipe j k c Void m b
      -> Pipe i k c t m a
 fuse up0 (Pipe down0) =
     Pipe $ \mc is ->
         let up x = unPipe up0 x is
          in go up $ down0 mc []
   where
-    go up1 (Pure (mc, js, either id id -> b)) = -- FIXME throwing away term info, maybe should be a different function
+    go _ (Pure (_, _, Left t)) = absurd t
+    go up1 (Pure (mc, js, Right b)) =
         closeUp $ up1 $ Just (b, js)
       where
         closeUp (Pure (_, is, a)) = Pure (mc, is, a)
@@ -159,20 +160,26 @@ type Sink i m r = Pipe i Void () Void m r
 -- Downstream early term must be the same as downstream result.
 (>->) :: Monad m
       => Pipe i j b t m a
-      -> Pipe j k c b m b
+      -> Pipe j k c Void m b
       -> Pipe i k c t m a
 (>->) = fuse
 
 -- | Only run upstream if downstream is still running.
 -- Upstream always returns the return value from downstream.
+-- Downstream termination is treated as a normal exit.
 (=$=) :: Monad m
       => Pipe i j () () m ()
       -> Pipe j k c b m b
       -> Pipe i k c t m b
 up =$= down =
-    up' >-> down
+    up' >-> termToRes down
   where
     up' = check >>= maybe (noTerm up >> liftM fst empty) (return . fst)
+
+termToRes :: Monad m => Pipe i o d r m r -> Pipe i o d t m r
+termToRes (Pipe f) = Pipe $ \mdo is -> do
+    (mdo', is', res) <- f mdo is
+    return (mdo', is', Right $ either id id res)
 
 noTerm :: Monad m => Pipe i o () t m r -> Pipe i o d' t' m (Either t r)
 noTerm (Pipe f) = Pipe $ \mdo is -> do
